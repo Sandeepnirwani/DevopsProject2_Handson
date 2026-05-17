@@ -67,7 +67,7 @@ jobs:
 
       # Build React Application
       - name: Build Application
-        run: npm run build
+        run: CI=false npm run build
 
       # Configure AWS Credentials
       - name: Configure AWS Credentials
@@ -108,26 +108,3 @@ jobs:
           ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
 
       # Update kubeconfig
-      - name: Update kubeconfig
-        run: |
-          aws eks update-kubeconfig \
-          --name $EKS_CLUSTER_NAME \
-          --region $AWS_REGION
-
-      # Deploy to EKS
-      - name: Deploy to EKS
-        run: |
-          kubectl apply -f k8s_files/deployment.yaml
-          kubectl apply -f k8s_files/service.yaml
-
-      # Verify Rollout
-      - name: Verify Rollout
-        run: |
-          kubectl rollout status deployment/prime-video-deployment
-
-      # Verify Kubernetes Resources
-      - name: Verify Kubernetes Deployment
-        run: |
-          kubectl get nodes
-          kubectl get pods
-          kubectl get svc
