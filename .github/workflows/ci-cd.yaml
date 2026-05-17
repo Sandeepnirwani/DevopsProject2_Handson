@@ -1,0 +1,133 @@
+name: DevSecOps CI/CD Pipeline
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: prime-video
+  EKS_CLUSTER_NAME: prime-video-cluster
+  IMAGE_TAG: latest
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # Checkout Repository
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Setup NodeJS
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Install Dependencies
+      - name: Install Dependencies
+        run: npm install
+
+      # Run Tests
+      - name: Run Tests
+        run: npm test -- --watchAll=false
+        continue-on-error: true
+
+      # SonarQube Scan
+      - name: SonarQube Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          npm install -g sonarqube-scanner
+
+          sonar-scanner \
+            -Dsonar.projectKey=prime-video \
+            -Dsonar.sources=. \
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.login=$SONAR_TOKEN
+
+      # SonarQube Quality Gate Check
+      - name: SonarQube Quality Gate
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # Trivy Filesystem Scan
+      - name: Trivy Filesystem Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: HIGH,CRITICAL
+
+      # Build React Application
+      - name: Build Application
+        run: npm run build
+
+      # Configure AWS Credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Login to Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build Docker Image
+      - name: Build Docker Image
+        run: |
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+
+      # Trivy Docker Image Scan
+      - name: Trivy Docker Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: prime-video:latest
+          format: table
+          severity: HIGH,CRITICAL
+
+      # Tag Docker Image
+      - name: Tag Docker Image
+        run: |
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG \
+          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+
+      # Push Docker Image to ECR
+      - name: Push Docker Image to ECR
+        run: |
+          docker push \
+          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+
+      # Update kubeconfig
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+          --name $EKS_CLUSTER_NAME \
+          --region $AWS_REGION
+
+      # Deploy to EKS
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f k8s_files/deployment.yaml
+          kubectl apply -f k8s_files/service.yaml
+
+      # Verify Rollout
+      - name: Verify Rollout
+        run: |
+          kubectl rollout status deployment/prime-video-deployment
+
+      # Verify Kubernetes Resources
+      - name: Verify Kubernetes Deployment
+        run: |
+          kubectl get nodes
+          kubectl get pods
+          kubectl get svc
